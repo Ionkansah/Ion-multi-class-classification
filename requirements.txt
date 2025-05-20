@@ -1,0 +1,10 @@
+streamlit
+joblib
+nltk
+pandas
+altair
+matplotlib
+seaborn
+reportlab
+numpy
+altair_saver
