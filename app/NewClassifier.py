@@ -7,7 +7,7 @@ import nltk
 import altair as alt
 import matplotlib.pyplot as plt
 import seaborn as sns
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import letter, A3, landscape
 from reportlab.pdfgen import canvas
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
@@ -20,8 +20,9 @@ from reportlab.pdfbase import pdfdoc
 from reportlab.lib.utils import ImageReader
 from altair_saver import save
 import os
+from sklearn.metrics import confusion_matrix
 
-# Download NLTK data (punkt) - Crucial for deployment!
+# Download NLTK data (punkt) - Required for deployment!
 try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
@@ -38,8 +39,8 @@ except LookupError:
 
 
 # Load the model and vectorizer
-model_path = "C:\\Users\\HP\\Documents\\MACHINE LEARNING CLASSIFICATION OF TWEETS-BI95CZ\\notebooks\\bi95cz_tweet_classification_model.joblib"
-vectorizer_path = "C:\\Users\\HP\\Documents\\MACHINE LEARNING CLASSIFICATION OF TWEETS-BI95CZ\\notebooks\\bi95cz_tweet_classification_vectorizer.joblib"
+model_path = "notebooks/bi95cz_tweet_classification_model.joblib"
+vectorizer_path = "notebooks/bi95cz_tweet_classification_vectorizer.joblib"
 
 try:
     model = joblib.load(model_path)
@@ -49,7 +50,13 @@ except FileNotFoundError:
     st.stop()
 
 
-label_encoder_classes = ['Arts & Culture', 'Business & Entrepreneurship', 'Pop Culture', 'Daily Life', 'Sports & Gaming', 'Science & Technology']
+label_encoder_classes = [
+    'Arts & Culture',
+    'Business & Entrepreneurship',
+    'Pop Culture',
+    'Daily Life',
+    'Sports & Gaming'
+]
 
 
 def clean_text(text):
@@ -60,6 +67,13 @@ def clean_text(text):
     text = text.lower()
     tokens = word_tokenize(text)
     return ' '.join(tokens)
+
+
+def safe_class_name(idx, class_names):
+    try:
+        return class_names[idx]
+    except Exception:
+        return "Unknown"
 
 
 # --- Visualization Functions ---
@@ -90,11 +104,25 @@ def plot_confusion_matrix(cm, class_names, title="Confusion Matrix"):
     st.pyplot(fig)
 
 
+def plot_class_distribution_matplotlib(data, class_names, container=None):
+    """Plots the distribution of predicted classes using matplotlib/seaborn."""
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.countplot(x='predicted_class', data=data, order=data['predicted_class'].value_counts().index, ax=ax)
+    plt.title("Predicted Class Distribution")
+    plt.xlabel('Class')
+    plt.ylabel('Count')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    if container is not None:
+        container.pyplot(fig)
+    return fig
+
+
 # --- PDF Report Generation ---
 def create_pdf_report(data, class_names, cm=None, filename="tweet_classification_report.pdf"):
     """Generates a PDF report containing predictions and visualizations."""
     buffer = BytesIO()  # Create an in-memory buffer for the PDF
-    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A3))
     doc.topMargin = 0.75 * inch
     doc.bottomMargin = 0.75 * inch
     styles = getSampleStyleSheet()
@@ -117,14 +145,20 @@ def create_pdf_report(data, class_names, cm=None, filename="tweet_classification
         story.append(table)
         story.append(Paragraph(" ", styles['Normal']))  # Add some space
 
-        # --- TEMPORARY: Try embedding a simple shape ---
-        drawing = Drawing(100, 100)
-        drawing.add(Circle(50, 50, 40, fillColor='red'))
-        story.append(drawing)
-        story.append(Paragraph(" ", styles['Normal']))  # Add some space
-        # --- TEMPORARY END ---
+    # Class Distribution Plot (Matplotlib/Seaborn only for PDF)
+    story.append(Paragraph("Predicted Class Distribution:", styles['h2']))
+    fig = plot_class_distribution_matplotlib(data, class_names)
+    img_buffer = BytesIO()
+    plt.savefig(img_buffer, format='png')
+    img_buffer.seek(0)
+    plt.close(fig)
+    try:
+        img = Image(img_buffer, width=5 * inch, height=4 * inch)
+        story.append(img)
+    except Exception as e:
+        story.append(Paragraph(f"Error embedding class distribution: {e}", styles['Normal']))
 
-    # Confusion Matrix (if available)
+    # Confusion Matrix (Received data)
     if cm is not None:
         story.append(Paragraph("Confusion Matrix:", styles['h2']))
         fig, ax = plt.subplots(figsize=(8, 6))
@@ -132,21 +166,17 @@ def create_pdf_report(data, class_names, cm=None, filename="tweet_classification
                     yticklabels=class_names, ax=ax)
         plt.xlabel('Predicted Label')
         plt.ylabel('True Label')
-        plt.title("Confusion Matrix (Training Data)")
-
-        # Save Matplotlib figure to BytesIO buffer
+        plt.title("Confusion Matrix (Uploaded Data)")
         cm_buffer = BytesIO()
         plt.savefig(cm_buffer, format='png')
         cm_buffer.seek(0)
-
         try:
             img = Image(cm_buffer, width=5 * inch, height=4 * inch)
             story.append(img)
         except Exception as e:
             story.append(Paragraph(f"Error embedding confusion matrix: {e}", styles['Normal']))
         finally:
-            plt.close(fig) # Close the Matplotlib figure
-
+            plt.close(fig)
         story.append(Paragraph(" ", styles['Normal']))  # Add some space
 
     doc.build(story)
@@ -163,7 +193,7 @@ display_cm = st.sidebar.checkbox("Show Confusion Matrix (on Training Data)", val
 # Single Tweet Prediction
 st.subheader('Name the class of a single tweet')
 single_tweet = st.text_area('Enter your tweet here:')
-if st.button('Name Single Tweet'):
+if st.button('Name Single Tweet Category'):
     if single_tweet:
         cleaned_tweet = clean_text(single_tweet)
         vectorized_tweet = vectorizer.transform([cleaned_tweet])
@@ -175,29 +205,45 @@ st.markdown('---')
 # Batch Prediction via File Upload
 st.subheader('Name the class of multiple tweets from a CSV file')
 uploaded_file = st.file_uploader(
-    "Upload a CSV file containing tweets (one tweet per row in a column named 'text')", type="csv")
+    "Upload a CSV file containing tweets (one tweet per row in a column named 'text'). For confusion matrix, add a 'true_label' column.", type="csv")
 
 if uploaded_file is not None:
     try:
-        string_data = uploaded_file.getvalue().decode("utf-8")
-        tweets = string_data.strip().split('\n')
-        df = pd.DataFrame({'text': tweets})
-
+        df = pd.read_csv(uploaded_file)
+        if 'true_label' in df.columns:
+            allowed = df['true_label'].isin(label_encoder_classes)
+        if not allowed.all():
+            st.warning(f"Some rows have true_label(s) not in the allowed classes and will be ignored: {set(df.loc[~allowed, 'true_label'])}")
+        df = df[allowed]
         if 'text' in df.columns:
             cleaned_tweets = [clean_text(tweet) for tweet in df['text'].tolist()]
             vectorized_tweets = vectorizer.transform(cleaned_tweets)
             predictions = model.predict(vectorized_tweets)
-            df['predicted_class'] = [label_encoder_classes[p] for p in predictions]
+            df['predicted_class'] = [safe_class_name(p, label_encoder_classes) for p in predictions]
             st.subheader('Predictions:')
             st.dataframe(df)
             st.success('Predictions completed successfully!')
 
-            # Visualizations for batch predictions
-            st.subheader("Batch Prediction Visualizations")
-            plot_class_distribution(predictions, label_encoder_classes)
+            # Filter for allowed true_label classes
+            cm = None
+            if 'true_label' in df.columns:
+                allowed = df['true_label'].isin(label_encoder_classes)
+                if not allowed.all():
+                    st.warning(f"Some rows have true_label(s) not in the allowed classes and will be ignored: {set(df.loc[~allowed, 'true_label'])}")
+                    df = df[allowed]
+                true_indices = df['true_label'].map(lambda x: label_encoder_classes.index(x)).tolist()
+                cm = confusion_matrix(true_indices, predictions[:len(true_indices)])
+                st.subheader("Confusion Matrix (Uploaded Data)")
+                plot_confusion_matrix(cm, label_encoder_classes)
+            else:
+                st.info("No 'true_label' column found in the uploaded file. Confusion matrix will not be shown.")
 
-            # PDF Report Generation for batch predictions
-            pdf_bytes = create_pdf_report(df, label_encoder_classes, cm=np.array([[10, 2, 1, 0, 0, 0], [1, 20, 3, 0, 1, 2], [2, 5, 150, 10, 5, 0], [0, 1, 8, 40, 2, 0], [0, 0, 5, 3, 100, 1]])) # Using dummy cm
+            # Visualizations for batch predictions (Matplotlib/Seaborn only)
+            st.subheader("Batch Prediction Visualizations")
+            fig = plot_class_distribution_matplotlib(df, label_encoder_classes, container=st)
+
+            # PDF Report Generation for batch predictions (with actual cm if available)
+            pdf_bytes = create_pdf_report(df, label_encoder_classes, cm=cm)
             st.download_button(
                 label="Download Prediction Report (PDF)",
                 data=pdf_bytes,
